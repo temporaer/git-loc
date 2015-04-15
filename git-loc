@@ -2,6 +2,7 @@
 
 import re
 from email.utils import parsedate
+import time
 from time import mktime
 from datetime import datetime
 from os import popen
@@ -36,6 +37,7 @@ with open("gitlocrc") as f:
     config.readfp(f)
 config.read([configfilename, os.path.expanduser('~/.gitlocrc')])
 exclusion_regexes = config.get("exclude", "regexes").splitlines()
+first_date = datetime.strptime(config.get("exclude", "firstdate"), "%Y-%m-%d")
 
 def pop():
 	if adds is None:
@@ -50,7 +52,7 @@ prevfolder = os.getcwd()
 if extfolder:
 	os.chdir(targetfolder)
 
-for x in popen('git log --no-color --reverse -p'):
+for x in popen('git log --no-color --date-order --reverse -p'):
 	if x.startswith('commit'):
 		if not excl:
 			pop()
@@ -64,6 +66,8 @@ for x in popen('git log --no-color --reverse -p'):
 		fc=1
 		d=datetime(*parsedate(x[5:])[:7])
 		t=mktime(parsedate(x[5:]))
+		if d < first_date:
+			excl = True
 		adds=0
 		dels=0
 	if fc==2:
@@ -94,13 +98,13 @@ def makesvg():
 	def quote(s):
 		return ''.join([quoteone(x) for x in s])
 
-	mlocs=max([locs for d,locs,adds,dels,hsh,who,cmt in h])
+	mlocs=max([locs+adds for d,locs,adds,dels,hsh,who,cmt in h])
 	yscale=800.0/mlocs
 
 	svg=stdout
 	svg.write("""<?xml version="1.0" standalone="no"?>"""
 		  """<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">"""
-		  """<svg preserveAspectRatio="none" width="100%%" height="100%%" viewBox="0 0 %u %u" version="1.1" xmlns="http://www.w3.org/2000/svg">"""%(25*len(h),mlocs*yscale))
+		  """<svg preserveAspectRatio="none" width="100%%" height="100%%" viewBox="0 0 %u %u" version="1.1" xmlns="http://www.w3.org/2000/svg">"""%(25*len(h)+50,mlocs*yscale))
 
 	svg.write("""<style>"""
 		  """rect.o{opacity:0}"""
@@ -116,26 +120,42 @@ def makesvg():
 	ps=[]
 	bl=[]
 	tx=[]
-	x=25
-	for d,locs,adds,dels,hsh,who,cmt in h:
+	xvalues = [float(val[0].strftime("%s")) for val in h]
+	xmin = min(xvalues)
+	xvalues = [x - xmin for x in xvalues]  # make them start at zero
+	xvalues = [x * len(h) * 25 / xvalues[-1] for x in xvalues]  # on average 25 per step
+	avginterval = xvalues[-1] / len(xvalues)
+	stretch = avginterval / 1.
+	xvalues2 = [0]
+	cumdelta = 0
+	for x in xvalues:
+		#delta = 0 if xvalues2[-1] - x > stretch else stretch-(x-xvalues2[-1])  # separate commits a bit
+		diff = (xvalues2[-1] - cumdelta) - x
+		cumdelta += 0 if diff > stretch else max(0, stretch - diff)
+		xvalues2.append(x + cumdelta)
+	xvalues = [x + 25 for x in xvalues2[1:]]
+	xvalues = [x * len(h) * 25 / xvalues[-1] for x in xvalues]  # on average 25 per step
+	xvalues.append(xvalues[-1] + 25)
+	for idx, (d,locs,adds,dels,hsh,who,cmt) in enumerate(h):
 		y=(mlocs-locs)*yscale
-		bl.append((x-1,y,3,dels*yscale,"fill:rgb(0,0,255)"))
-		bl.append((x-1,y-adds*yscale,3,adds*yscale,"fill:rgb(0,255,0)"))
+		dtx = xvalues[idx]
+		dtxprev = dtx - (dtx-xvalues[idx-1])/2 if idx > 0 else 0
+		dtxnext = dtx + (xvalues[idx+1]-dtx)/2
+		bl.append((dtx-1,y,3,dels*yscale,"fill:rgb(0,0,255)"))
+		bl.append((dtx-1,y-adds*yscale,3,adds*yscale,"fill:rgb(0,255,0)"))
 
-		bl.append((x-12,0,25,mlocs*yscale,'',
-			"""title="%s %8u %5s %5s   %s" """%(d,locs,'+'+str(adds),'-'+str(dels),quote(cmt.strip()))
-			+"""class="o" """))
+		bl.append((dtxprev,0,dtxnext-dtxprev,mlocs*yscale,'',
+			"""title="%s %8u %5s %5s   %s" """%(d,locs,'+'+str(adds),'-'+str(dels),quote(cmt.strip())) +"""class="o" """))
 
-		ps.append("%u,%u"%(x,y))
-		x+=25
+		ps.append("%u,%u"%(dtx,y))
 
 	svg.write("""\n""")
-	svg.write("""<polyline points="0,%u %u,%u" class="a"/>"""%(mlocs*yscale,x,mlocs*yscale,))
+	svg.write("""<polyline points="0,%u %u,%u" class="a"/>"""%(mlocs*yscale,xvalues[-1],mlocs*yscale,))
 	svg.write("""<polyline points="25,0 25,%u" class="a"/>"""%(mlocs*yscale+25,))
 
 	it=pow(10,len(str(mlocs))-2)
 	for i in range(it,mlocs,it):
-		svg.write("""<polyline points="0,%u %u,%u" class="a" style="stroke:rgb(200,200,200)"/>"""%(mlocs*yscale-i*yscale,x,mlocs*yscale-i*yscale,))
+		svg.write("""<polyline points="0,%u %u,%u" class="a" style="stroke:rgb(200,200,200)"/>"""%(mlocs*yscale-i*yscale,xvalues[-1],mlocs*yscale-i*yscale,))
 		svg.write("""\n""")
 
 	for b in bl:
@@ -143,9 +163,6 @@ def makesvg():
 		svg.write("""\n""")
 
 	svg.write("""<polyline points="%s" class="a" style="stroke:red"/>"""%(' '.join(ps),))
-
-
-		
 
 	svg.write("""</svg>\n""")
 

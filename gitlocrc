@@ -4,3 +4,4 @@
 # note that they have to match the whole first commit line.
 regexes: .*DONTCOUNT.*
     .*GITLOCIGNORE\s.*
+firstdate: 1973-01-01
